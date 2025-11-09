@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Local Food Classifier</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load TensorFlow.js (NO coco-ssd needed) -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            border-radius: 50%;
+            border-top-color: #09f;
+            width: 32px;
+            height: 32px;
+            animation: spin 1s linear infinite;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen flex items-center justify-center p-4">
+
+    <div class="bg-white w-full max-w-xl rounded-2xl shadow-xl p-6 md:p-10">
+        <div class="text-center">
+            <h1 class="text-3xl font-bold text-gray-800 mb-3">Custom Food Classifier</h1>
+            <p class="text-gray-600 mb-6">Upload an image to classify it using your **custom-trained** `food101` model.</p>
+        </div>
+
+        <!-- Image Upload Area -->
+        <input type="file" id="imageUpload" accept="image/*" class="hidden">
+        <label for="imageUpload" class="flex flex-col items-center justify-center w-full h-48 bg-gray-50 border-2 border-dashed border-gray-300 rounded-lg text-gray-500 hover:bg-gray-100 hover:border-gray-400 cursor-pointer">
+            <svg class="w-12 h-12 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
+            <span class="font-medium">Click to upload an image</span>
+        </label>
+
+        <!-- Status & Results -->
+        <div id="status" class="text-center p-4 text-gray-700 font-medium hidden"></div>
+
+        <!-- Image Preview -->
+        <div id="imagePreviewContainer" class="mt-6 relative w-full hidden">
+            <img id="imagePreview" src="" alt="Image preview" class="w-full h-auto rounded-lg shadow-md">
+        </div>
+
+        <!-- Classification Results -->
+        <div id="calorieResults" class="mt-6 pt-6 border-t border-gray-200 hidden">
+            <h2 class="text-2xl font-semibold text-gray-800 mb-4 text-center">Prediction Results</h2>
+            <div id="calorieBreakdown" class="space-y-2 mb-4">
+                <!-- Items will be listed here -->
+            </div>
+            <div class="mt-4 p-3 bg-blue-100 border border-blue-300 text-blue-800 rounded-lg">
+                <p class="font-bold">Information Note:</p>
+                <p class="text-sm">This model provides caloric density (calories per 100 grams). This is **not** a total for the portion shown.</p>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        const imageUpload = document.getElementById('imageUpload');
+        const imagePreview = document.getElementById('imagePreview');
+        const imagePreviewContainer = document.getElementById('imagePreviewContainer');
+        const status = document.getElementById('status');
+        const calorieResults = document.getElementById('calorieResults');
+        const calorieBreakdown = document.getElementById('calorieBreakdown');
+
+        let model = null;
+        const MODEL_IMG_SIZE = 160; // Must match the IMG_SIZE in your Python script
+
+        // --- 1. The 101 Classes from the 'food101' dataset ---
+        // This is crucial. It maps the model's output (a number, 0-100) to a name.
+        const FOOD101_CLASSES = [
+            'apple_pie', 'baby_back_ribs', 'baklava', 'beef_carpaccio', 'beef_tartare',
+            'beet_salad', 'beignets', 'bibimbap', 'bread_pudding', 'breakfast_burrito',
+            'bruschetta', 'caesar_salad', 'cannoli', 'caprese_salad', 'carrot_cake',
+            'ceviche', 'cheesecake', 'cheese_plate', 'chicken_curry',
+            'chicken_quesadilla', 'chicken_wings', 'chocolate_cake', 'chocolate_mousse',
+            'churros', 'clam_chowder', 'club_sandwich', 'crab_cakes', 'creme_brulee',
+            'croque_madame', 'cup_cakes', 'deviled_eggs', 'donuts', 'dumplings',
+            'edamame', 'eggs_benedict', 'escargots', 'falafel', 'filet_mignon',
+            'fish_and_chips', 'foie_gras', 'french_fries', 'french_onion_soup',
+            'french_toast', 'fried_calamari', 'fried_rice', 'frozen_yogurt',
+            'garlic_bread', 'gnocchi', 'greek_salad', 'grilled_cheese_sandwich',
+            'grilled_salmon', 'guacamole', 'gyoza', 'hamburger', 'hot_and_sour_soup',
+            'hot_dog', 'huevos_rancheros', 'hummus', 'ice_cream', 'lasagna',
+            'lobster_bisque', 'lobster_roll_sandwich', 'macaroni_and_cheese',
+            'macarons', 'miso_soup', 'mussels', 'nachos', 'omelette', 'onion_rings',
+            'oysters', 'pad_thai', 'paella', 'pancakes', 'panna_cotta', 'peking_duck',
+            'pho', 'pizza', 'pork_chop', 'poutine', 'prime_rib', 'pulled_pork_sandwich',
+            'ramen', 'ravioli', 'red_velvet_cake', 'risotto', 'samosa', 'sashimi',
+            'scallops', 'seaweed_salad', 'shrimp_and_grits', 'spaghetti_bolognese',
+            'spaghetti_carbonara', 'spring_rolls', 'steak', 'strawberry_shortcake',
+            'sushi', 'tacos', 'tako_yaki', 'tiramisu', 'tuna_tartare', 'waffles'
+        ];
+
+        // --- 2. Expanded Calorie Database ---
+        // We match the names from FOOD101_CLASSES.
+        // I've only done some; you can expand this!
+        const CALORIE_LOOKUP = {
+            'apple_pie': { name: 'Apple Pie', kcal_per_100g: 237 },
+            'baby_back_ribs': { name: 'Baby Back Ribs', kcal_per_100g: 292 },
+            'baklava': { name: 'Baklava', kcal_per_100g: 428 },
+            'beef_carpaccio': { name: 'Beef Carpaccio', kcal_per_100g: 119 },
+            'beef_tartare': { name: 'Beef Tartare', kcal_per_100g: 147 },
+            'beet_salad': { name: 'Beet Salad', kcal_per_100g: 86 },
+            'caesar_salad': { name: 'Caesar Salad', kcal_per_100g: 158 },
+            'carrot_cake': { name: 'Carrot Cake', kcal_per_100g: 407 },
+            'cheesecake': { name: 'Cheesecake', kcal_per_100g: 321 },
+            'chicken_curry': { name: 'Chicken Curry', kcal_per_100g: 110 },
+            'chicken_wings': { name: 'Chicken Wings', kcal_per_100g: 203 },
+            'chocolate_cake': { name: 'Chocolate Cake', kcal_per_100g: 389 },
+            'donuts': { name: 'Donut', kcal_per_100g: 452 },
+            'dumplings': { name: 'Dumplings', kcal_per_100g: 225 },
+            'edamame': { name: 'Edamame', kcal_per_100g: 121 },
+            'eggs_benedict': { name: 'Eggs Benedict', kcal_per_100g: 180 },
+            'falafel': { name: 'Falafel', kcal_per_100g: 333 },
+            'french_fries': { name: 'French Fries', kcal_per_100g: 312 },
+            'french_toast': { name: 'French Toast', kcal_per_100g: 219 },
+            'fried_rice': { name: 'Fried Rice', kcal_per_100g: 174 },
+            'greek_salad': { name: 'Greek Salad', kcal_per_100g: 100 },
+            'grilled_salmon': { name: 'Grilled Salmon', kcal_per_100g: 208 },
+            'guacamole': { name: 'Guacamole', kcal_per_100g: 160 },
+            'hamburger': { name: 'Hamburger', kcal_per_100g: 250 },
+            'hot_dog': { name: 'Hot Dog', kcal_per_100g: 290 },
+            'hummus': { name: 'Hummus', kcal_per_100g: 166 },
+            'ice_cream': { name: 'Ice Cream', kcal_per_100g: 207 },
+            'lasagna': { name: 'Lasagna', kcal_per_100g: 135 },
+            'macaroni_and_cheese': { name: 'Mac & Cheese', kcal_per_100g: 158 },
+            'omelette': { name: 'Omelette', kcal_per_100g: 154 },
+            'onion_rings': { name: 'Onion Rings', kcal_per_100g: 350 },
+            'pad_thai': { name: 'Pad Thai', kcal_per_100g: 132 },
+            'pancakes': { name: 'Pancakes', kcal_per_100g: 227 },
+            'pizza': { name: 'Pizza', kcal_per_100g: 266 },
+            'pork_chop': { name: 'Pork Chop', kcal_per_100g: 209 },
+            'ramen': { name: 'Ramen', kcal_per_100g: 44 },
+            'samosa': { name: 'Samosa', kcal_per_100g: 261 },
+            'sashimi': { name: 'Sashimi (Salmon)', kcal_per_100g: 127 },
+            'spaghetti_bolognese': { name: 'Spaghetti Bolognese', kcal_per_100g: 115 },
+            'spring_rolls': { name: 'Spring Rolls', kcal_per_100g: 250 },
+            'steak': { name: 'Steak (Ribeye)', kcal_per_100g: 291 },
+            'sushi': { name: 'Sushi (Roll)', kcal_per_100g: 143 },
+            'tacos': { name: 'Tacos', kcal_per_100g: 226 },
+            'tiramisu': { name: 'Tiramisu', kcal_per_100g: 258 },
+            'waffles': { name: 'Waffles', kcal_per_100g: 291 }
+        };
+
+
+        // Function to show status
+        function showStatus(message, showSpinner = false) {
+            status.classList.remove('hidden');
+            let spinnerHtml = showSpinner ? '<div class="spinner mx-auto mb-2"></div>' : '';
+            status.innerHTML = `${spinnerHtml}${message}`;
+        }
+
+        // --- 3. Load the *Custom* Model ---
+        async function loadModel() {
+            showStatus('Loading custom-trained model...', true);
+            try {
+                // *** ------------------------------------------------ ***
+                // *** PASTE YOUR 'model.json' URL FROM STEP 2 HERE  ***
+                const MODEL_URL = 'https://rittripathi.github.io/calories/modelfood/model.json';
+                // *** ------------------------------------------------ ***
+
+                if (MODEL_URL === 'YOUR_MODEL') {
+                    showStatus('Error: Please update the MODEL_URL in the script.', false);
+                    return;
+                }
+                model = await tf.loadLayersModel(MODEL_URL);
+                showStatus('Custom model loaded! Ready to classify.', false);
+                console.log('Model loaded successfully');
+            } catch (e) {
+                console.error(e);
+                showStatus('Error: Could not load custom model. Check URL.', false);
+            }
+        }
+        loadModel(); // Start loading the model immediately
+
+        // --- 4. Handle Image Upload ---
+        imageUpload.addEventListener('change', (event) => {
+            const file = event.target.files[0];
+            if (file && model) {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    imagePreview.src = e.target.result;
+                    imagePreviewContainer.classList.remove('hidden');
+                    calorieResults.classList.add('hidden');
+                    calorieBreakdown.innerHTML = '';
+                };
+                
+                imagePreview.onload = () => {
+                    classifyImage(imagePreview);
+                };
+                
+                reader.readAsDataURL(file);
+            } else if (!model) {
+                showStatus('Please wait for the model to finish loading.', false);
+            }
+        });
+
+        // --- 5. Classify the Image ---
+        async function classifyImage(imgElement) {
+            if (!imgElement || imgElement.naturalHeight === 0) {
+                return;
+            }
+
+            showStatus('Classifying image...', true);
+            
+            try {
+                // Pre-process the image
+                const tensor = tf.browser.fromPixels(imgElement)
+                    .resizeNearestNeighbor([MODEL_IMG_SIZE, MODEL_IMG_SIZE])
+                    .toFloat()
+                    .div(tf.scalar(127.5)) // Normalize to [-1, 1]
+                    .sub(tf.scalar(1.0))   //
+                    .expandDims();         // Add batch dimension
+
+                // Run prediction
+                const predictions = await model.predict(tensor).data();
+                
+                // Get top prediction
+                const topPrediction = getTopPrediction(predictions);
+
+                showStatus(`Prediction: ${topPrediction.name}`, false);
+
+                // Display calorie info
+                displayCalorieResults(topPrediction);
+
+                tensor.dispose(); // Clean up the tensor
+            } catch (e) {
+                console.error(e);
+                showStatus('Error during classification.', false);
+            }
+        }
+
+        // --- 6. Helper to find top prediction ---
+        function getTopPrediction(predictions) {
+            const maxScore = Math.max(...predictions);
+            const maxIndex = predictions.indexOf(maxScore);
+            const className = FOOD101_CLASSES[maxIndex];
+            const confidence = Math.round(maxScore * 100);
+
+            return {
+                name: className,
+                confidence: confidence
+            };
+        }
+
+        // --- 7. Display Calorie Results ---
+        function displayCalorieResults(prediction) {
+            calorieBreakdown.innerHTML = ''; // Clear old results
+
+            const foodData = CALORIE_LOOKUP[prediction.name];
+
+            // Main prediction display
+            const itemEl = document.createElement('div');
+            itemEl.className = 'flex justify-between items-center text-lg';
+            const displayName = foodData ? foodData.name : prediction.name.replace(/_/g, ' '); // Use formatted name or just fix underscores
+            itemEl.innerHTML = `
+                <span class="font-bold text-blue-600">${displayName}</span>
+                <span class="font-medium text-gray-700">${prediction.confidence}% confidence</span>
+            `;
+            calorieBreakdown.appendChild(itemEl);
+
+            // Calorie display (if we have it)
+            if (foodData) {
+                const calEl = document.createElement('div');
+                calEl.className = 'flex justify-between items-center text-gray-600 mt-2';
+                calEl.innerHTML = `
+                    <span>Avg. Caloric Density:</span>
+                    <span class="font-medium">${foodData.kcal_per_100g} kcal / 100g</span>
+                `;
+                calorieBreakdown.appendChild(calEl);
+            } else {
+                const calEl = document.createElement('div');
+                calEl.className = 'text-gray-500 mt-2 text-sm text-center';
+                calEl.innerHTML = `(No calorie data in our lookup for this item yet)`;
+                calorieBreakdown.appendChild(calEl);
+            }
+            
+            calorieResults.classList.remove('hidden');
+        }
+
+    </script>
+</body>
+</html>
